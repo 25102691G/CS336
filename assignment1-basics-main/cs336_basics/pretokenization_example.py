@@ -50,12 +50,13 @@ def find_chunk_boundaries(
 
 
 ## 使用示例
-with open(..., "rb") as f:
-    num_processes = 4
-    boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+if __name__ == "__main__":
+    with open(..., "rb") as f:
+        num_processes = 4
+        boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
 
-    # 以下是串行实现，但你可以通过将每个起始/结束对发送到一组进程来实现并行化。
-    for start, end in zip(boundaries[:-1], boundaries[1:]):
-        f.seek(start)
-        chunk = f.read(end - start).decode("utf-8", errors="ignore")
-        # 对你的块运行预分词，并存储每个预分词的计数
+        # 以下是串行实现，但你可以通过将每个起始/结束对发送到一组进程来实现并行化。
+        for start, end in zip(boundaries[:-1], boundaries[1:]):
+            f.seek(start)
+            chunk = f.read(end - start).decode("utf-8", errors="ignore")
+            # 对你的块运行预分词，并存储每个预分词的计数
