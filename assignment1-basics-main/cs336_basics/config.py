@@ -61,8 +61,8 @@ class TrainingConfig:
     eval_batches: int = 20
 
     ckpt_interval: int = 1000
-    ckpt_path: str = "checkpoints/ckpt.pt"
-    resume_from: Optional[str] = "checkpoints/ckpt.pt" # 如果存在，则从此检查点恢复，否则从头开始训练(设置为0)
+    ckpt_path: str = "workspace/checkpoints/ckpt.pt"
+    resume_from: Optional[str] = "workspace/checkpoints/ckpt.pt" # 如果存在，则从此检查点恢复，否则从头开始训练(设置为0)
 
     seed: int = 0
 
