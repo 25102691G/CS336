@@ -110,6 +110,35 @@ def encode_to_uint16_bin(tokenizer: Tokenizer, input_path: str, output_path: str
         if n:
             fout.write(buf[:n].tobytes())
 
+def encode_to_int32_bin(tokenizer: Tokenizer, input_path: str, output_path: str, *, chunk_tokens: int = 1_000_000) -> None:
+    """
+    流式编码大型文本文件为 int32 token ID，并写入 .bin 文件
+
+    这避免了将整个 token 序列存储在内存中，通过缓冲固定数量的 token ID 并定期刷新到磁盘来实现
+    """
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
+    # 使用追加二进制模式，以便我们可以多次刷新数据块
+    with open(input_path, "r", encoding="utf-8", errors="ignore") as fin, open(output_path, "wb") as fout:
+        buf = np.empty(chunk_tokens, dtype=np.int32)
+        n = 0
+
+        for tid in tokenizer.encode_iterable(fin):
+            # 安全检查：确保 tid 在 int32 范围内
+            if tid < -2147483648 or tid > 2147483647:
+                raise ValueError(f"token id {tid} out of int32 range")
+            
+            buf[n] = tid
+            n += 1
+
+            if n == chunk_tokens:
+                fout.write(buf.tobytes())
+                n = 0
+        
+        # 刷新尾部数据
+        if n:
+            fout.write(buf[:n].tobytes())
+
 def main():
     # 1) 训练好的分词器路径
     tin_vocab_path = "workspace/tinystories_bpe_vocab_10000.pkl"
@@ -164,15 +193,25 @@ def main():
     print(f"Estimated time for 82GB: {est_hours:.2f} hours")
 
     # (d) 序列化 token ID 用于语言模型训练
-    print("\n=== (d) Encoding datasets to uint16 ===")
+    # print("\n=== (d) Encoding datasets to uint16 ===")
     
-    encode_to_uint16_bin(tin_tok, "data/TinyStoriesV2-GPT4-train.txt", "workspace/tinystories_train.uint16.bin")
-    encode_to_uint16_bin(tin_tok, "data/TinyStoriesV2-GPT4-valid.txt", "workspace/tinystories_valid.uint16.bin")
+    # encode_to_uint16_bin(tin_tok, "data/TinyStoriesV2-GPT4-train.txt", "workspace/bin/uint16/tinystories_train.uint16.bin")
+    # encode_to_uint16_bin(tin_tok, "data/TinyStoriesV2-GPT4-valid.txt", "workspace/bin/uint16/tinystories_valid.uint16.bin")
 
-    encode_to_uint16_bin(owt_tok, "data/owt_train.txt", "workspace/owt_train.uint16.bin")
-    encode_to_uint16_bin(owt_tok, "data/owt_valid.txt", "workspace/owt_valid.uint16.bin")
+    # encode_to_uint16_bin(owt_tok, "data/owt_train.txt", "workspace/bin/uint16/owt_train.uint16.bin")
+    # encode_to_uint16_bin(owt_tok, "data/owt_valid.txt", "workspace/bin/uint16/owt_valid.uint16.bin")
 
-    print("Done. Saved uint16 .bin files under workspace/.")
+    # print("Done. Saved uint16 .bin files under workspace/.")
+
+    print("\n=== (d) Encoding datasets to int32 ===")
+    
+    encode_to_int32_bin(tin_tok, "data/TinyStoriesV2-GPT4-train.txt", "workspace/bin/int32/tinystories_train.int32.bin")
+    encode_to_int32_bin(tin_tok, "data/TinyStoriesV2-GPT4-valid.txt", "workspace/bin/int32/tinystories_valid.int32.bin")
+
+    encode_to_int32_bin(owt_tok, "data/owt_train.txt", "workspace/bin/int32/owt_train.int32.bin")
+    encode_to_int32_bin(owt_tok, "data/owt_valid.txt", "workspace/bin/int32/owt_valid.int32.bin")
+
+    print("Done. Saved int32 .bin files under workspace/.")
 
 if __name__ == "__main__":
     main()

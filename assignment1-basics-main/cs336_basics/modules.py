@@ -432,8 +432,8 @@ class CausalMultiHeadSelfAttentionWithRoPE(nn.Module):
         v = v.view(new_shape).transpose(-3, -2)
 
         # 对每个头的 Q 和 K 应用 RoPE（头被视为类似 batch 的维度）
-        q = self.rope(q, token_positions)
-        k = self.rope(k, token_positions)
+        q = self.rope(q, token_positions.unsqueeze(-2))
+        k = self.rope(k, token_positions.unsqueeze(-2))
 
         # 在头和 batch 之间共享的因果掩码
         mask = self._causal_mask(seq_len, device=device)
