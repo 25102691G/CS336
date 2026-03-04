@@ -2,10 +2,18 @@ from typing import Optional
 from dataclasses import dataclass, field
 
 @dataclass
+class RunConfig:
+    runs_dir: str = "runs"
+    run_name_prefix: str = "ts_baseline"
+    run_name: Optional[str] = None
+
+@dataclass
 class DataConfig:
     # 内存映射的 token 文件（一维二进制文件）
     train_data_path: str = "workspace/bin/int32/tinystories_train.int32.bin"
     val_data_path: str = "workspace/bin/int32/tinystories_valid.int32.bin"
+    # train_data_path: str = "workspace/bin/int32/owt_train.int32.bin"
+    # val_data_path: str = "workspace/bin/int32/owt_valid.int32.bin"
     # 创建 token 文件时使用的 Numpy 数据类型
     np_dtype: str = "int32"
 
@@ -38,8 +46,8 @@ class ModelConfig:
 
 @dataclass
 class OptimizerConfig:
-    lr_max: float = 3e-4
-    lr_min: float = 3e-5
+    lr_max: float = 1e-3
+    lr_min: float = 1e-4
 
     warmup_iters: int = 200
     cosine_cycle_iters: int = 10_000
@@ -53,27 +61,28 @@ class OptimizerConfig:
 
 @dataclass
 class TrainingConfig:
-    max_steps: int = 10_000
-    batch_size: int = 64
+    max_steps: int = 3_000
+    batch_size: int = 12
     
     log_interval: int = 50
     eval_interval: int = 500
     eval_batches: int = 20
 
-    ckpt_interval: int = 1000
-    ckpt_path: str = "workspace/checkpoints/ckpt.pt"
-    resume_from: Optional[str] = "workspace/checkpoints/ckpt.pt" # 如果存在，则从此检查点恢复，否则从头开始训练(设置为0)
+    ckpt_interval: int = 1000 # 保存模型ckpt的间隔
+    ckpt_path: str = "workspace/checkpoints/tinystories/ckpt.pt"
+    resume_from: Optional[str] = "0" # 如果存在，则从此检查点恢复，否则从头开始训练(设置为0)
 
-    seed: int = 0
+    seed: int = 42
 
 @dataclass
 class WandbConfig:
-    enable: bool = False
+    enable: bool = True
     project: str = "cs336-a1"
     run_name: str = "train"
 
 @dataclass
 class TrainConfig:
+    run: RunConfig = field(default_factory=RunConfig)
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     optim: OptimizerConfig = field(default_factory=OptimizerConfig)

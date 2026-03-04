@@ -8,6 +8,7 @@ from cs336_basics.nn_utils import cross_entropy_from_logits, load_checkpoint, sa
 from cs336_basics.config import get_default_config
 from cs336_basics.transformer_lm import TransformerLM
 from cs336_basics.optimizer import AdamW, lr_cosine_schedule_with_warmup
+from cs336_basics.experiment_tracking import ExperimentTracker
 
 def open_memmap_1d(path: str, np_dtype: str) -> np.memmap:
     """
@@ -61,20 +62,28 @@ def main() -> None:
     np.random.seed(cfg.train.seed)
 
     # 2. 可选的实验跟踪 (weights & biases)
-    wandb = None
-    if cfg.wandb.enable:
-        import wandb as _wandb
-        wandb = _wandb
-        wandb.init(project=cfg.wandb.project, name=cfg.wandb.run_name, config={
-            "data": cfg.data.__dict__,
-            "model": cfg.model.__dict__,
-            "optim": cfg.optim.__dict__,
-            "train": cfg.train.__dict__,
-            "wandb": cfg.wandb.__dict__
-        })
+    if cfg.run.run_name is not None:
+        run_name = f"{cfg.run.run_name_prefix}_{cfg.run.run_name}"
+    else:
+        run_name = f"{cfg.run.run_name_prefix}_{time.strftime('%Y%m%d_%H%M%S')}"
 
-    # 3. 准备文件系统并加载数据集（内存映射）
-    os.makedirs(os.path.dirname(cfg.train.ckpt_path) or ".", exist_ok=True)
+    run_dir = os.path.join(cfg.run.runs_dir, run_name)
+
+    tracker = ExperimentTracker(
+        run_dir=run_dir,
+        config=cfg,  # 数据类将被序列化
+        use_wandb=getattr(cfg.wandb, "enable", False),
+        wandb_project=getattr(cfg.wandb, "project", "cs336-a1"),
+        wandb_run_name=getattr(cfg.wandb, "run_name", run_name)
+    )
+
+    ckpt_dir = os.path.join(run_dir, "checkpoints")
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    ckpt_path = os.path.join(ckpt_dir, "ckpt.pt")
+    best_ckpt_path = os.path.join(ckpt_dir, "ckpt.best.pt")
+
+    # 3. 加载数据集（内存映射）
 
     train_mm = open_memmap_1d(cfg.data.train_data_path, cfg.data.np_dtype)
     val_mm = open_memmap_1d(cfg.data.val_data_path, cfg.data.np_dtype)
@@ -109,8 +118,15 @@ def main() -> None:
     )
 
     start_it = 0
-    if cfg.train.resume_from is not None and os.path.exists(cfg.train.resume_from):
-        start_it = load_checkpoint(cfg.train.resume_from, model, optimizer)
+    resume_path = cfg.train.resume_from
+    if resume_path is None:
+        resume_path = ckpt_path
+    elif not os.path.isabs(resume_path):
+        resume_path = os.path.join(run_dir, resume_path)
+
+    if resume_path is not None and os.path.exists(resume_path):
+        start_it = load_checkpoint(resume_path, model, optimizer)
+        print(f"[resume] loaded checkpoint: {resume_path} (start_it={start_it})")
 
     # 6. 训练循环初始化
     best_val = float("inf")
@@ -159,8 +175,7 @@ def main() -> None:
             tok_s = (cfg.train.batch_size * cfg.data.context_length * cfg.train.log_interval) / dt
             msg = f"it={it+1} loss={loss.item():.4f} lr={lr:.3e} tok/s={tok_s:.1f}"
             print(msg)
-            if wandb is not None:
-                wandb.log({"train/loss": float(loss.item()), "train/lr": lr, "train/tok_s": tok_s}, step=it + 1)
+            tracker.log(step=it + 1, metrics={"train/loss": float(loss.item()), "train/lr": float(lr), "train/tok_s": float(tok_s)})
             last_log_t = now
         
         # 7.8 在验证集上进行定期评估
@@ -168,23 +183,20 @@ def main() -> None:
             val_loss = estimate_loss(model, val_mm, cfg)
             val_ppl = float(math.exp(val_loss))
             print(f"[eval] it={it+1} val_loss={val_loss:.4f} val_ppl={val_ppl:.2f}")
-            if wandb is not None:
-                wandb.log({"val/loss": val_loss, "val/ppl": val_ppl}, step=it + 1)            
+            tracker.log(step=it + 1, metrics={"val/loss": float(val_loss), "val/ppl": float(val_ppl)})    
 
             # 保存表现最好的检查点
             if val_loss < best_val:
                 best_val = val_loss
-                best_path = cfg.train.ckpt_path.replace(".pt", ".best.pt")
-                save_checkpoint(model, optimizer, it + 1, best_path)
+                save_checkpoint(model, optimizer, it + 1, best_ckpt_path)
 
         # 7.9 定期保存检查点
         if (it + 1) % cfg.train.ckpt_interval == 0:
-            save_checkpoint(model, optimizer, it + 1, cfg.train.ckpt_path)
+            save_checkpoint(model, optimizer, it + 1, ckpt_path)
 
     # 8. 最终检查点和清理
-    save_checkpoint(model, optimizer, cfg.train.max_steps, cfg.train.ckpt_path)
-    if wandb is not None:
-        wandb.finish()
+    save_checkpoint(model, optimizer, cfg.train.max_steps, ckpt_path)
+    tracker.close()
 
 if __name__ == "__main__":
     main()
