@@ -382,9 +382,9 @@ def save_jsonl(items: List[Dict[str, Any]], path: Path):
 def main():
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("--model_id", default="data/models/Qwen2.5-Math-1.5B")
-    ap.add_argument("--train_path", default="data/MATH/train.jsonl")
-    ap.add_argument("--val_path", default="data/MATH/validation.jsonl")
+    ap.add_argument("--model_id", default="cs336_alignment/data/models/Qwen2.5-Math-1.5B")
+    ap.add_argument("--train_path", default="cs336_alignment/data/MATH/train.jsonl")
+    ap.add_argument("--val_path", default="cs336_alignment/data/MATH/validation.jsonl")
     ap.add_argument("--prompt_file", default="cs336_alignment/prompts/r1_zero.prompt")
 
     ap.add_argument("--train_device", default="cuda:0")
@@ -394,39 +394,39 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
 
     # EI hyperparams
-    ap.add_argument("--n_ei_steps", type=int, default=5)
-    ap.add_argument("--D_i", type=int, default=512, help="number of questions sampled per EI step")
-    ap.add_argument("--G", type=int, default=2, help="rollouts per question")
-    ap.add_argument("--epochs", type=int, default=1, help="SFT epochs per EI step")
-    ap.add_argument("--max_train_steps_per_ei", type=int, default=0, help="0 means no cap")
+    ap.add_argument("--n_ei_steps", type=int, default=5)          # EI迭代步数
+    ap.add_argument("--D_i", type=int, default=512, help="number of questions sampled per EI step")  # 每次EI步骤采样的问题数量
+    ap.add_argument("--G", type=int, default=2, help="rollouts per question")                      # 每个问题的rollout数量
+    ap.add_argument("--epochs", type=int, default=1, help="SFT epochs per EI step")                # 每次EI步骤的SFT训练轮数
+    ap.add_argument("--max_train_steps_per_ei", type=int, default=0, help="0 means no cap")        # 每次EI的最大训练步数（0表示无限制）
 
     # SFT optimizer params
-    ap.add_argument("--lr", type=float, default=2e-5)
-    ap.add_argument("--micro_batch_size", type=int, default=2)
-    ap.add_argument("--grad_acc_steps", type=int, default=16)
+    ap.add_argument("--lr", type=float, default=2e-5)              # 学习率
+    ap.add_argument("--micro_batch_size", type=int, default=2)     # 微批次大小
+    ap.add_argument("--grad_acc_steps", type=int, default=16)      # 梯度累积步数
 
     # vLLM sampling params for rollout
-    ap.add_argument("--sampling_temperature", type=float, default=1.0)
-    ap.add_argument("--sampling_top_p", type=float, default=1.0)
-    ap.add_argument("--sampling_max_tokens", type=int, default=256)
-    ap.add_argument("--sampling_min_tokens", type=int, default=4)
+    ap.add_argument("--sampling_temperature", type=float, default=1.0)  # 采样温度
+    ap.add_argument("--sampling_top_p", type=float, default=1.0)        # Top-p 采样参数
+    ap.add_argument("--sampling_max_tokens", type=int, default=256)     # 最大生成token数
+    ap.add_argument("--sampling_min_tokens", type=int, default=4)       # 最小生成token数
 
     # eval params
-    ap.add_argument("--eval_max_examples", type=int, default=500)
-    ap.add_argument("--eval_request_batch_size", type=int, default=64)
-    ap.add_argument("--rollout_request_batch_size", type=int, default=32)
-    ap.add_argument("--save_each_ei_step", action="store_true")
+    ap.add_argument("--eval_max_examples", type=int, default=500)       # 评估时最大样本数
+    ap.add_argument("--eval_request_batch_size", type=int, default=64)  # 评估请求批次大小
+    ap.add_argument("--rollout_request_batch_size", type=int, default=32)  # rollout请求批次大小
+    ap.add_argument("--save_each_ei_step", action="store_true")         # 是否在每步EI后保存模型
 
     args = ap.parse_args()
 
-    # run folder
+    # 创建运行目录
     run_name = f"ei_G{args.G}_E{args.epochs}_D{args.D_i}_seed{args.seed}"
     run_dir = Path(args.out_dir) / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / "log.jsonl"
     log_event = make_logger(log_path)
 
-    # seeds
+    # 设置随机种子
     torch.manual_seed(args.seed)
     random.seed(args.seed)
 
@@ -439,18 +439,18 @@ def main():
         }
     )
 
-    # load prompt template + data
+    # 加载提示模板和数据
     prompt_template = load_prompt_template(args.prompt_file)
 
     train_data = load_jsonl(args.train_path)
     val_data = load_jsonl(args.val_path)
 
-    # build eval prompts
+    # 构建评估prompts
     eval_prompts, eval_gts, _ = build_prompts_and_gts(
         val_data, prompt_template, max_examples=args.eval_max_examples
     )
 
-    # init tokenizer/policy (HF) on train_device
+    # 在训练设备上初始化tokenizer和策略模型
     tokenizer = AutoTokenizer.from_pretrained(args.model_id)
     policy = AutoModelForCausalLM.from_pretrained(
         args.model_id,
@@ -459,22 +459,22 @@ def main():
     ).to(args.train_device)
     policy.train()
 
-    # init vLLM on vllm_device
+    # 在vLLM设备上初始化vLLM
     llm = init_vllm(args.model_id, device=args.vllm_device, seed=args.seed)
 
-    # sampling params for rollout (n=G)
+    # 设置rollout的采样参数
     rollout_sampling_params = SamplingParams(
         temperature=args.sampling_temperature,
         top_p=args.sampling_top_p,
         max_tokens=args.sampling_max_tokens,
         min_tokens=args.sampling_min_tokens,
-        n=args.G,
+        n=args.G,                  # 每个prompt生成G个响应
         seed=args.seed,
-        stop=["</answer>"],
+        stop=["</answer>"],        # 停止词
         include_stop_str_in_output=True,
     )
 
-    # eval sampling params
+    # 评估时的采样参数
     eval_sampling_params = SamplingParams(
         temperature=1.0,
         top_p=1.0,
@@ -484,7 +484,7 @@ def main():
         include_stop_str_in_output=True,
     )
 
-    # initial eval
+    # 初始评估
     init_metrics = eval_policy_with_vllm(
         policy=policy,
         llm=llm,
@@ -495,11 +495,11 @@ def main():
     )
     log_event({"type": "eval_metrics", "ei_step": 0, "metrics": init_metrics, "msg": f"[EI 0] {init_metrics}"})
 
-    # EI loop
+    # 开始Expert Iteration循环
     rng = random.Random(args.seed)
 
     for ei_step in range(1, args.n_ei_steps + 1):
-        # sample D_i questions
+        # 随机采样D_i个问题
         rng.shuffle(train_data)
         sampled = train_data[: args.D_i]
 
@@ -507,7 +507,7 @@ def main():
             sampled, prompt_template, max_examples=0
         )
 
-        # load policy -> vLLM and rollout
+        # 将策略模型加载到vLLM并开始rollout
         policy.eval()
         with torch.no_grad():
             load_policy_into_vllm_instance(policy, llm)
@@ -523,7 +523,7 @@ def main():
             request_batch_size=args.rollout_request_batch_size,
         )
 
-        # save EI dataset for this step
+        # 保存当前步骤的数据集
         ei_data_path = run_dir / f"ei_step_{ei_step:02d}_kept.jsonl"
         save_jsonl(kept_items, ei_data_path)
 
@@ -537,7 +537,7 @@ def main():
             }
         )
 
-        # train SFT on kept items
+        # 在保留的项目上训练SFT
         policy.train()
         train_summary = train_sft_on_items(
             policy=policy,
@@ -556,7 +556,7 @@ def main():
         log_event({"type": "train_summary", "ei_step": ei_step, "summary": train_summary,
                    "msg": f"[EI {ei_step}] train summary: {train_summary}"})
         
-        # eval after EI step
+        # EI步骤后的评估
         metrics = eval_policy_with_vllm(
             policy=policy,
             llm=llm,
@@ -568,7 +568,7 @@ def main():
         log_event({"type": "eval_metrics", "ei_step": ei_step, "metrics": metrics,
                    "msg": f"[EI {ei_step}] {metrics}"})
 
-        # save model
+        # 保存模型
         if args.save_each_ei_step:
             step_dir = run_dir / f"model_ei_step_{ei_step:02d}"
             step_dir.mkdir(parents=True, exist_ok=True)
@@ -577,10 +577,10 @@ def main():
             log_event({"type": "save", "ei_step": ei_step, "out_dir": str(step_dir),
                        "msg": f"[EI {ei_step}] Saved model: {step_dir}"})
             
-        # return to train mode for next step
+        # 为下一步返回训练模式
         policy.train()
 
-    # final save
+    # 最终保存
     final_dir = run_dir / "model_final"
     final_dir.mkdir(parents=True, exist_ok=True)
     policy.save_pretrained(str(final_dir))

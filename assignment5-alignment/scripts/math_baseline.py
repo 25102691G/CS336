@@ -13,6 +13,7 @@ from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 
 @dataclass
 class EvalRow:
+    ''' 数据类：存储单条评估结果的所有维度 '''
     idx: int
     problem_id: Optional[str]
     prompt: str
@@ -24,6 +25,7 @@ class EvalRow:
     category: str  # "F1A1", "F1A0", "F0A0"
 
 def load_jsonl(path: str) -> List[Dict[str, Any]]:
+    ''' 加载数学题验证集，每行为{"problem": "...", "answer": "..."} '''
     data = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -34,16 +36,17 @@ def load_jsonl(path: str) -> List[Dict[str, Any]]:
     return data
 
 def read_text(path: str) -> str:
+    ''' 读取 Prompt 模板文件 '''
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
 def format_r1_zero_prompt(prompt_template: str, question: str) -> str:
-    # prompt_template 应包含 "{question}"
-    return prompt_template.format(question=question)
+    ''' 将题干填入模板，生成模型最终接收的 Prompt '''
+    return prompt_template.format(question=question) # prompt_template 应包含 "{question}"
 
 def categorize(format_reward: float, answer_reward: float) -> str:
     '''
-        F: format reward, A: answer reward
+        根据格式奖励 fr 和答案奖励 ar，将回答分类为以下三类之一：
         "F1A1": 格式正确且答案正确, 
         "F1A0": 格式正确但答案错误, 
         "F0A0": 格式错误且答案错误。
@@ -111,20 +114,22 @@ def evaluate_vllm(
     return rows
 
 def write_jsonl(path: str, rows: List[EvalRow]) -> None:
+    ''' 将所有 EvalRow 保存为 jsonl 文件 '''
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         for r in rows:
             f.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
 
 def summarize(rows: List[EvalRow]) -> Dict[str, Any]:
+    ''' 计算整体评估指标 '''
     n = len(rows)
     c = {"F1A1": 0, "F1A0": 0, "F0A0": 0}
     for r in rows:
         c[r.category] += 1
 
-    format_rate = sum(r.format_reward for r in rows) / n if n else 0.0
-    acc = sum(r.answer_reward for r in rows) / n if n else 0.0
-    avg_reward = sum(r.reward for r in rows) / n if n else 0.0
+    format_rate = sum(r.format_reward for r in rows) / n if n else 0.0 # 格式合规率
+    acc = sum(r.answer_reward for r in rows) / n if n else 0.0 # 答案准确率
+    avg_reward = sum(r.reward for r in rows) / n if n else 0.0 # 平均奖励分（综合分）
 
     return {
         "n": n,
@@ -135,13 +140,14 @@ def summarize(rows: List[EvalRow]) -> Dict[str, Any]:
     }
 
 def sample_examples(rows: List[EvalRow], category: str, k: int = 10) -> List[EvalRow]:
+    ''' 从每个分类（F1A1/F1A0/F0A0）抽取前 10 条样本，保存为samples.json（用于人工分析模型短板） '''
     picked = [r for r in rows if r.category == category]
     return picked[:k]
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="cs336_assignment/data/models/Qwen2.5-Math-1.5B")
-    ap.add_argument("--data", default="cs336_assignment/data/MATH/validation.jsonl")
+    ap.add_argument("--model", default="cs336_alignment/data/models/Qwen2.5-Math-1.5B")
+    ap.add_argument("--data", default="cs336_alignment/data/MATH/validation.jsonl")
     ap.add_argument("--prompt_file", default="cs336_alignment/prompts/r1_zero.prompt")
     ap.add_argument("--out_dir", default="runs/math_baseline")
     ap.add_argument("--max_tokens", type=int, default=1024)

@@ -23,6 +23,7 @@ from vllm.model_executor import set_random_seed as vllm_set_random_seed
 
 
 def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: float = 0.85):
+    '''初始化 vLLM 实例，设置随机种子，并应用必要的补丁以避免分布式环境和 profiling 相关的错误。'''
     vllm_set_random_seed(seed)
     world_size_path = patch("torch.distributed.get_world_size", return_value=1)
     profiling_patch = patch(
@@ -33,13 +34,15 @@ def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: flo
         return LLM(
             model=model_id,
             device=device,
-            dtype=torch.bfloat16,
+            # dtype=torch.bfloat16,
+            dtype=torch.float16,
             enable_prefix_caching=True,
             gpu_memory_utilization=gpu_memory_utilization,
         )
 
 
 def load_policy_into_vllm_instance(policy, llm: LLM):
+    '''将当前训练的 policy 模型权重加载到 vLLM 实例中，以便在评估阶段使用最新的模型进行生成和奖励计算。'''
     state_dict = policy.state_dict()
     llm_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
     llm_model.load_weights(state_dict.items())
@@ -65,6 +68,7 @@ class SFTDataset(Dataset):
     
 
 def collate_fn(batch, tokenizer):
+    '''批处理函数：将原始的 prompt-response 对转换为模型输入格式，包括编码、构建 attention mask、生成 labels 和 response_mask 等。输入是一个包含多个 (prompt, response) 的列表，输出是一个字典，包含 input_ids、labels、response_mask 等张量，准备好用于模型训练。'''
     prompts = [x[0] for x in batch]
     outputs = [x[1] for x in batch]
 
@@ -73,6 +77,7 @@ def collate_fn(batch, tokenizer):
 
 
 def build_math_val_prompts_and_gts(val_path: str, prompt_file: str, max_examples: int = 0):
+    '''构建 MATH 验证集的提示词和对应的 ground truth 答案列表，使用指定的 prompt 模板格式化每个问题。'''
     prompt_template = Path(prompt_file).read_text(encoding="utf-8")
 
     val = []
@@ -97,7 +102,7 @@ def build_math_val_prompts_and_gts(val_path: str, prompt_file: str, max_examples
 
 def filter_correct_sft_samples(data_path: str, out_path: str):
     """
-    Filtering: Only retain SFT samples that can produce the correct answer.
+    过滤：筛选出 SFT 数据集中的正确答案样本，基于 r1_zero_reward_fn 计算奖励分数，并仅保留那些奖励分数达到正确答案阈值（如 1.0）的样本。最终将过滤后的样本写入新的 JSONL 文件，并返回过滤统计信息。
     """
     kept = []
     total = 0
@@ -124,10 +129,11 @@ def filter_correct_sft_samples(data_path: str, out_path: str):
 
 
 def main():
+    # 1. 解析命令行参数（用户可自定义训练配置）
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model_id", default="data/models/Qwen2.5-Math-1.5B")
-    ap.add_argument("--sft_path", default="data/MATH/sft.jsonl")
-    ap.add_argument("--val_path", default="data/MATH/validation.jsonl")
+    ap.add_argument("--model_id", default="cs336_alignment/data/models/Qwen2.5-Math-1.5B")
+    ap.add_argument("--sft_path", default="cs336_alignment/data/MATH/sft.jsonl")
+    ap.add_argument("--val_path", default="cs336_alignment/data/MATH/validation.jsonl")
     ap.add_argument("--prompt_file", default="cs336_alignment/prompts/r1_zero.prompt")
 
     ap.add_argument("--train_device", default="cuda:0")
@@ -146,7 +152,7 @@ def main():
     ap.add_argument("--eval_max_examples", type=int, default=500)
     args = ap.parse_args()
 
-    # logging
+    # 2. 初始化日志系统（所有训练/评估事件都会记录到 log.jsonl）
     run_dir = Path(args.out_dir) / f"samples{args.train_samples or 'full'}_{'filtered' if args.filter_correct else 'all'}"
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / "log.jsonl"
@@ -157,7 +163,7 @@ def main():
 
     def log_event(event: Dict[str, Any], *, also_print: bool = True):
         """
-        Append one json line to log.jsonl (and optionally print a readable message).
+        将训练 / 评估事件（loss、指标、步骤）写入 JSONL 文件，可选打印到终端
         """
         payload = {
             "ts": datetime.now().isoformat(timespec="seconds"),
@@ -178,22 +184,49 @@ def main():
             else:
                 print(payload)    
 
-    # seed
+    # 3. 设置随机种子
     torch.manual_seed(args.seed)
     random.seed(args.seed)
 
-    # tokenizer/model on train device
-    tokenizer = AutoTokenizer.from_pretrained(args.model_id)
+    # 4. 自动检测设备配置
+    gpu_count = torch.cuda.device_count()
+    if gpu_count == 0:
+        raise RuntimeError("未检测到 GPU，此脚本需要 GPU 支持")
+    
+    if args.train_device is None:
+        args.train_device = "cuda:0"
+    
+    if args.vllm_device is None:
+        if gpu_count >= 2:
+            args.vllm_device = "cuda:1"
+        else:
+            args.vllm_device = "cuda:0"
+            print(f"警告：只有 1 块 GPU，训练和 vLLM 推理将共享同一设备 ({args.vllm_device})")
+    
+    # 5. 验证设备是否可用
+    for device in [args.train_device, args.vllm_device]:
+        device_idx = int(device.split(":")[1]) if ":" in device else 0
+        if device_idx >= gpu_count:
+            raise RuntimeError(f"设备 {device} 不存在，系统只有 {gpu_count} 块 GPU")
+
+    # 6. 加载预训练模型作为初始 policy，准备进行 SFT 微调
+    model_path = Path(args.model_id).resolve() if os.path.exists(args.model_id) else args.model_id
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    
+    
+    # 5. 加载预训练模型作为初始 policy，准备进行 SFT 微调
     policy = AutoModelForCausalLM.from_pretrained(
         args.model_id,
-        torch_dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2",
+        # torch_dtype=torch.bfloat16, # 显存占用大
+        torch_dtype=torch.float16,
+        # attn_implementation="flash_attention_2", # 需要算力大于8.0的GPU
     ).to(args.train_device)
     policy.train()
 
-    # vLLM on eval device
+    # 6. 初始化 vLLM 实例，用于后续评估阶段的高效文本生成和奖励计算
     llm = init_vllm(args.model_id, device=args.vllm_device, seed=args.seed)
 
+    # 7. 加载验证集（用于评估模型效果）
     eval_prompts, eval_gts = build_math_val_prompts_and_gts(
         args.val_path, args.prompt_file, max_examples=args.eval_max_examples
     )
@@ -206,7 +239,7 @@ def main():
         include_stop_str_in_output=True,
     )
 
-    # optionally filter dataset
+    # 8. （可选）过滤训练数据：仅保留模型回答正确的样本
     data_path = args.sft_path
     if args.filter_correct:
         filtered_path = str(Path(args.out_dir) / "filtered_sft.jsonl")
@@ -214,7 +247,10 @@ def main():
         log_event({"type": "filter_stats", "stats": stats, "msg": f"Filter stats: {stats}"})
         data_path = filtered_path
 
+    # 9. 加载训练数据集
     dataset = SFTDataset(data_path, limit=args.train_samples, seed=args.seed)
+
+    # 10. 构建数据加载器
     loader = DataLoader(
         dataset,
         batch_size=args.micro_batch_size,
@@ -223,25 +259,29 @@ def main():
         drop_last=True,
     )
 
+    # 11. 初始化优化器
     opt = torch.optim.AdamW(policy.parameters(), lr=args.lr)
 
     # training loop
     opt.zero_grad(set_to_none=True)
 
+    # 12. 训练循环
     for epoch in range(10_000_000):
         for batch in loader:
+            # 更新全局步骤计数器
             step += 1
             micro_idx += 1
 
+            # 数据移动到训练设备
             input_ids = batch["input_ids"].to(args.train_device)
             labels = batch["labels"].to(args.train_device)
             response_mask = batch["response_mask"].to(args.train_device)
 
-            # get per-token log_probs (B, T)
+            # 计算模型输出（回答部分的对数概率）
             out = get_response_log_probs(policy, input_ids, labels, return_token_entropy=False)
             policy_log_probs = out["log_probs"]            
 
-            # microbatch train step: does backward inside
+            # 微批次训练（计算损失 + 反向传播)
             loss, meta = sft_microbatch_train_step(
                 policy_log_probs=policy_log_probs,
                 response_mask=response_mask,
@@ -249,7 +289,7 @@ def main():
                 normalize_constant=1.0,
             )
 
-            # optimizer step each grad_acc_steps
+            # 优化器周期性更新
             if micro_idx % args.grad_acc_steps == 0:
                 torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
                 opt.step()
@@ -258,7 +298,7 @@ def main():
                 if opt_step % 10 == 0:
                     log_event({"type": "train_loss", "loss": float(loss.detach())}, also_print=False)
 
-            # periodic eval
+            # 周期性评估
             if step % args.eval_interval == 0:
                 policy.eval()
                 with torch.no_grad():
